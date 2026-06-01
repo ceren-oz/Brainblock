@@ -1,4 +1,4 @@
-# BrainBlock DRL — CS 445/545 Spring 2026
+# BrainBlock DRL — CS 445 Spring 2026
 
 Tetromino packing puzzle solved with **Soft Actor-Critic (SAC)** using PyTorch.
 
