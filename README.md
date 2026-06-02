@@ -2,143 +2,242 @@
 
 Tetromino packing puzzle solved with **Soft Actor-Critic (SAC)** using PyTorch.
 
-## Project structure
+## Project Structure
 
-```
+```text
 brainblock/
-├── environment.py   – Gymnasium-compatible 8×5 BrainBlock env
-├── sac_agent.py     – Discrete SAC with action masking + auto-entropy
-├── train.py         – Training script (configurable hyperparameters)
-├── evaluate.py      – Deterministic rollouts, metrics, solution plots
-├── plot_results.py  – Learning-curve figures from CSV logs
-├── demo_run.py      – Smoke tests + 500-ep quick demo
+├── environment.py      – Gymnasium-compatible 8×5 BrainBlock environment
+├── sac_agent.py        – Discrete SAC with action masking + auto-entropy
+├── train.py            – Training script (configurable hyperparameters)
+├── evaluate.py         – Deterministic rollouts, metrics, solution plots, GIF export
+├── plot_results.py     – Learning-curve figures from CSV logs
+├── visualize_gif.py    – Visualize generated solution GIFs
+├── demo_ui.py          – Interactive UI for watching trained agents
+├── demo_run.py         – Smoke tests and quick demonstrations
+├── requirements.txt    – Project dependencies
 └── README.md
 ```
 
 ## Installation
 
+Install all required dependencies:
+
 ```bash
-pip install torch gymnasium numpy matplotlib
+pip install -r requirements.txt
 ```
 
-Python ≥ 3.10 recommended.  CUDA is optional but speeds up training.
+**Requirements:**
 
-## Quick smoke test
+* Python ≥ 3.10
+* CUDA (optional, but recommended for faster training)
+
+---
+
+## Quick Smoke Test
+
+Verify that the environment and agent are working correctly:
 
 ```bash
 python demo_run.py
 ```
 
+---
+
 ## Training
 
-### Dense reward (recommended)
+### Dense Reward (Recommended)
 
 ```bash
 python train.py --reward_fn dense --seed 0 --episodes 30000
 ```
 
-### Sparse reward (comparison)
+### Sparse Reward (Comparison)
 
 ```bash
 python train.py --reward_fn sparse --seed 0 --episodes 30000
 ```
 
-### Multi-seed run (5 seeds)
+Training outputs are stored under:
 
-```bash
-for seed in 0 1 2 3 4; do
-    python train.py --reward_fn dense --seed $seed --episodes 30000
-done
+```text
+runs/
+└── sac_<reward>_seed<n>/
+    ├── log.csv
+    └── checkpoints/
+        └── final.pt
 ```
 
-Checkpoints are saved to `runs/sac_<reward>_seed<n>/checkpoints/`.  
-Logs (CSV) are at `runs/sac_<reward>_seed<n>/log.csv`.
+---
 
-### Key hyperparameters
+## Key Hyperparameters
 
-| Flag            | Default    | Description                          |
-|-----------------|------------|--------------------------------------|
-| `--reward_fn`   | `dense`    | `dense` or `sparse`                  |
-| `--episodes`    | `20000`    | Training episodes                    |
-| `--hidden`      | `256 256`  | MLP hidden layer sizes               |
-| `--lr`          | `3e-4`     | Learning rate (actor + critic)       |
-| `--gamma`       | `0.99`     | Discount factor                      |
-| `--tau`         | `5e-3`     | Polyak averaging rate                |
-| `--batch_size`  | `256`      | Replay buffer batch size             |
-| `--buffer_cap`  | `100000`   | Replay buffer capacity               |
-| `--warmup_steps`| `2000`     | Steps before first gradient update   |
+| Flag             | Default   | Description                                      |
+| ---------------- | --------- | ------------------------------------------------ |
+| `--reward_fn`    | `dense`   | Reward function (`dense` or `sparse`)            |
+| `--episodes`     | `20000`   | Number of training episodes                      |
+| `--hidden`       | `256 256` | Hidden layer sizes for actor and critic networks |
+| `--lr`           | `3e-4`    | Learning rate                                    |
+| `--gamma`        | `0.99`    | Discount factor                                  |
+| `--tau`          | `5e-3`    | Polyak averaging coefficient                     |
+| `--batch_size`   | `256`     | Replay buffer batch size                         |
+| `--buffer_cap`   | `100000`  | Replay buffer capacity                           |
+| `--warmup_steps` | `2000`    | Environment steps before learning begins         |
+
+---
 
 ## Evaluation
 
+Evaluate a trained checkpoint and optionally generate GIF visualizations:
+
 ```bash
-python evaluate.py \
-    --ckpt runs/sac_dense_seed0/checkpoints/final.pt \
-    --reward_fn dense \
-    --n_episodes 500 \
-    --n_seeds 5 \
-    --max_solutions 10 \
-    --out_dir eval_out/
+python evaluate.py --ckpt runs/sac_dense_seed0/checkpoints/final.pt --reward_fn dense --n_episodes 500 --n_seeds 5 --max_solutions 5 --out_dir eval_out/dense_seed0 --gif
 ```
 
-Outputs:
-- `eval_out/eval_results.csv` — per-episode metrics
-- `eval_out/solution_01.png` … `solution_10.png` — colour-coded board renders
+### Evaluation Outputs
 
-## Plotting
+```text
+eval_out/
+└── dense_seed0/
+    ├── eval_results.csv
+    ├── solution_01.png
+    ├── solution_02.png
+    ├── ...
+    └── gifs/
+        ├── solution_01.gif
+        ├── solution_02.gif
+        └── ...
+```
+
+Generated files:
+
+| File                   | Description                                              |
+| ---------------------- | -------------------------------------------------------- |
+| `eval_results.csv`     | Per-episode evaluation metrics and summary statistics    |
+| `solution_XX.png`      | Color-coded final board layouts for successful solutions |
+| `gifs/solution_XX.gif` | Animated visualization of the piece-placement process    |
+
+---
+
+## Interactive Demo UI
+
+Launch the interactive visualization interface:
 
 ```bash
-python plot_results.py \
-    --log_dirs runs/sac_dense_seed0/log.csv \
-              runs/sac_sparse_seed0/log.csv \
-    --window 200 \
-    --out_dir plots/
+python demo_ui.py
+```
+
+### Default Settings
+
+| Parameter      | Value                                       |
+| -------------- | ------------------------------------------- |
+| Checkpoint     | `runs/sac_dense_seed0/checkpoints/final.pt` |
+| Playback Speed | `0.5`                                       |
+
+### Custom Example
+
+```bash
+python demo_ui.py --ckpt runs\sac_dense_seed0\checkpoints\final.pt --speed 3.0
+```
+
+---
+
+## Plotting Training Results
+
+### Compare Dense and Sparse Training
+
+```bash
+python plot_results.py --log_dirs runs/sac_dense_seed0/log.csv runs/sac_sparse_seed0/log.csv --window 200 --out_dir plots/
 ```
 
 Produces:
-- `plots/training_curves.png`  — reward, covered cells, episode length, success rate
-- `plots/invalid_action_rate.png`
+
+```text
+plots/
+├── training_curves.png
+└── invalid_action_rate.png
+```
+
+### Plot All Dense-Reward Seeds
+
+```bash
+python plot_results.py --log_dirs runs/sac_dense_seed0/log.csv runs/sac_dense_seed1/log.csv runs/sac_dense_seed2/log.csv runs/sac_dense_seed3/log.csv runs/sac_dense_seed4/log.csv --out_dir plots/dense_all_seeds
+```
+
+Produces:
+
+```text
+plots/
+└── dense_all_seeds/
+    ├── training_curves.png
+    └── invalid_action_rate.png
+```
+
+Files generated:
+
+* `training_curves.png` — reward, covered cells, episode length, and success-rate curves.
+* `invalid_action_rate.png` — invalid-action frequency during training.
 
 ---
 
 ## MDP Design
 
-### State observation (dim = 50)
+### State Observation (Dimension = 50)
 
-| Component | Size | Description |
-|-----------|------|-------------|
-| Board     | 40   | Binary grid (row-major), 1 = filled |
-| Current piece | 5 | One-hot over {I, O, L, Z, T} |
-| Remaining counts | 5 | Normalised count of each piece still in queue |
+| Component        | Size | Description                                |
+| ---------------- | ---- | ------------------------------------------ |
+| Board            | 40   | Binary occupancy grid (row-major order)    |
+| Current Piece    | 5    | One-hot encoding of `{I, O, L, Z, T}`      |
+| Remaining Counts | 5    | Normalized counts of remaining tetrominoes |
 
-### Action space
+### Action Space
 
-`A = {0..7} × {0..7} × {0..4}` → flat index `[0, 319]`  
-`(orientation, x_anchor, y_anchor)`
+```text
+A = {0..7} × {0..7} × {0..4}
+```
 
-### Reward functions
+Flattened into:
 
-**Dense (recommended):**
-- `+0.4` per cell placed (up to `+1.6` per step)
-- `+0.2` adjacency bonus when piece is placed touching an existing filled cell
-- `+10` on full-board completion
-- `−1` on invalid action (hard termination)
+```text
+[0, 319]
+```
 
-**Sparse:**
-- `+10` on full-board completion
-- `−1` on invalid action (hard termination)
-- `0` otherwise
+Representing:
 
-### Why SAC?
+```text
+(orientation, x_anchor, y_anchor)
+```
 
-SAC is a maximum-entropy off-policy method that naturally:
-1. **Explores** via entropy regularisation — avoids deterministic collapse early in training.
-2. **Handles sparse rewards** better than on-policy methods due to experience replay.
-3. **Adapts** the temperature `α` automatically, balancing exploration vs exploitation.
+---
 
-Action masking prevents the agent from wasting gradient steps on geometrically impossible placements, dramatically accelerating convergence.
+## Reward Functions
+
+### Dense Reward (Recommended)
+
+* `+0.4` per occupied cell placed successfully
+* `+0.2` adjacency bonus when touching existing filled cells
+* `+10` upon complete board coverage
+* `−1` for invalid actions (episode terminates)
+
+### Sparse Reward
+
+* `+10` upon complete board coverage
+* `−1` for invalid actions (episode terminates)
+* `0` otherwise
+
+---
+
+## Why Soft Actor-Critic (SAC)?
+
+Soft Actor-Critic is a maximum-entropy, off-policy reinforcement learning algorithm that:
+
+1. Encourages exploration through entropy regularization.
+2. Handles sparse rewards effectively using experience replay.
+3. Automatically adapts the temperature parameter (`α`) to balance exploration and exploitation.
+
+Additionally, action masking prevents the agent from selecting geometrically invalid placements, significantly improving sample efficiency and convergence speed.
 
 ---
 
 ## Academic Integrity
 
-AI tools used for code structure and documentation drafting; all RL formulation, reward design, and experimental choices are the authors' own work.
+AI tools were used to assist with code organization and documentation drafting. All reinforcement learning formulation, environment design, reward engineering, implementation decisions, and experimental methodology are the authors' own work.
