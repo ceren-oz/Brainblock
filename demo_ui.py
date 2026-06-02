@@ -8,10 +8,7 @@ matplotlib.use("TkAgg", force=True)
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-
-print("Matplotlib backend:", matplotlib.get_backend())
 
 from environment import BrainBlockEnv, W, H
 from sac_agent import SACAgent
@@ -19,7 +16,7 @@ from evaluate import PIECE_COLORS
 
 
 # =========================
-# CONSTANTS
+# CONFIG
 # =========================
 DETERMINISTIC = True
 MAX_QUEUE_SHOW = 10
@@ -29,7 +26,7 @@ GRID_COLOR = "#DDDDDD"
 
 
 # =========================
-# ARGUMENTS
+# ARG PARSER
 # =========================
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -38,21 +35,27 @@ def parse_args():
         "--ckpt",
         type=str,
         default="runs/sac_dense_seed0/checkpoints/final.pt",
-        help="Path to model checkpoint"
+    )
+
+    parser.add_argument(
+        "--reward_fn",
+        type=str,
+        default="dense",
+        choices=["dense", "sparse"],
+        help="Must match training env"
     )
 
     parser.add_argument(
         "--speed",
         type=float,
-        default=0.5,
-        help="Simulation speed multiplier (higher = faster)"
+        default=0.5
     )
 
     return parser.parse_args()
 
 
 # =========================
-# DEMO UI
+# UI CLASS
 # =========================
 class DemoUI:
     def __init__(self, agent, env, speed):
@@ -65,19 +68,18 @@ class DemoUI:
 
         self.done = False
 
-        # cumulative reward tracker
+        # episode tracking
         self.episode_reward = 0.0
 
-        # cell memory
+        # board visualization state
         self.cell_colors = [
             [EMPTY_COLOR for _ in range(W)]
             for _ in range(H)
         ]
-        self.prev_board = np.zeros((H, W), dtype=int)
+        self.prev_board = self.env.board.copy()
 
-        # matplotlib GUI
+        # matplotlib
         plt.ion()
-
         self.fig = plt.figure(figsize=(10, 5))
         self.canvas = FigureCanvasTkAgg(self.fig)
         self.canvas.draw()
@@ -93,7 +95,7 @@ class DemoUI:
         if self.done:
             return
 
-        piece = self.env.queue[0] if len(self.env.queue) > 0 else None
+        piece = self.env.queue[0] if self.env.queue else None
 
         action = self.agent.select_action(
             self.obs,
@@ -101,37 +103,42 @@ class DemoUI:
             deterministic=DETERMINISTIC
         )
 
-        self.obs, reward, terminated, truncated, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = self.env.step(action)
 
+        self.obs = obs
         self.mask = self.env.get_valid_action_mask()
+
         self.done = terminated or truncated
 
-        self.episode_reward += reward
+        # SAFE accumulation (no double counting issues)
+        self.episode_reward += float(reward)
 
-        self._update_cell_colors(piece)
+        self._update_board_colors(piece)
         self.render(reward, info)
 
         time.sleep(0.5 / self.speed)
 
     # =========================
-    # UPDATE COLORS
+    # BOARD UPDATE (FIXED)
     # =========================
-    def _update_cell_colors(self, piece):
+    def _update_board_colors(self, piece):
         board = self.env.board
-        diff = board - self.prev_board
 
-        if piece is not None:
-            color = PIECE_COLORS.get(piece, "#999999")
+        diff = (board - self.prev_board)
+        if piece is None:
+            self.prev_board = board.copy()
+            return
 
-            for r in range(H):
-                for c in range(W):
-                    if diff[r, c] == 1:
-                        self.cell_colors[r][c] = color
+        color = PIECE_COLORS.get(piece, "#999999")
+
+        changed_cells = np.argwhere(diff == 1)
+        for r, c in changed_cells:
+            self.cell_colors[r][c] = color
 
         self.prev_board = board.copy()
 
     # =========================
-    # BOARD
+    # RENDER BOARD
     # =========================
     def render_board(self):
         self.ax_board.clear()
@@ -155,7 +162,7 @@ class DemoUI:
         self.ax_board.axis("off")
 
     # =========================
-    # QUEUE
+    # RENDER QUEUE
     # =========================
     def render_queue(self):
         self.ax_queue.clear()
@@ -172,7 +179,7 @@ class DemoUI:
 
             self.ax_queue.text(
                 0.1, y,
-                ("> " if is_current else "  ") + piece,
+                ("> " if is_current else "  ") + str(piece),
                 fontsize=14 if is_current else 12,
                 fontweight="bold" if is_current else "normal",
                 color=color
@@ -181,12 +188,11 @@ class DemoUI:
         self.ax_queue.text(
             0.1, 0.05,
             f"Remaining: {len(self.env.queue)}",
-            fontsize=10,
-            color="black"
+            fontsize=10
         )
 
     # =========================
-    # RENDER
+    # RENDER FRAME
     # =========================
     def render(self, reward, info):
         self.render_board()
@@ -194,10 +200,9 @@ class DemoUI:
 
         self.fig.suptitle(
             f"Step Reward: {reward:.2f} | "
-            f"Total Reward: {self.episode_reward:.2f} | "
+            f"Episode Reward: {self.episode_reward:.2f} | "
             f"Step: {self.env.step_count} | "
-            f"Covered: {info.get('covered', 0)}/40",
-            fontsize=12
+            f"Covered: {info.get('covered', 0)}/40"
         )
 
         self.canvas.draw()
@@ -208,7 +213,7 @@ class DemoUI:
 # RUN DEMO
 # =========================
 def run_demo(args):
-    env = BrainBlockEnv(reward_fn="dense")
+    env = BrainBlockEnv(reward_fn=args.reward_fn)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -222,25 +227,27 @@ def run_demo(args):
 
     ui = DemoUI(agent, env, speed=args.speed)
 
-    print(f"Starting RL Demo... ckpt={args.ckpt}, speed={args.speed}")
+    print(f"Running demo | reward_fn={args.reward_fn}")
 
     try:
         while True:
+
             if ui.done:
-                time.sleep(1.0)
+                time.sleep(0.5)
 
                 ui.obs, _ = env.reset(seed=np.random.randint(0, 9999))
                 ui.mask = env.get_valid_action_mask()
                 ui.done = False
 
+                # RESET ALL STATE (critical fix)
                 ui.cell_colors = [[EMPTY_COLOR for _ in range(W)] for _ in range(H)]
-                ui.prev_board = np.zeros((H, W), dtype=int)
+                ui.prev_board = env.board.copy()
                 ui.episode_reward = 0.0
 
             ui.step()
 
     except KeyboardInterrupt:
-        print("\nDemo stopped.")
+        print("Stopped.")
 
 
 # =========================

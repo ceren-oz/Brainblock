@@ -120,7 +120,7 @@ Generated files:
 
 ## Interactive Demo UI
 
-Launch the interactive visualization interface:
+Launch the interactive visualization interface (default settings):
 
 ```bash
 python demo_ui.py
@@ -128,15 +128,30 @@ python demo_ui.py
 
 ### Default Settings
 
-| Parameter      | Value                                       |
-| -------------- | ------------------------------------------- |
-| Checkpoint     | `runs/sac_dense_seed0/checkpoints/final.pt` |
-| Playback Speed | `0.5`                                       |
+| Parameter       | Value                                       |
+|-----------------|---------------------------------------------|
+| Checkpoint      | `runs/sac_dense_seed0/checkpoints/final.pt` |
+| Reward Function | `dense`                                     |
+| Playback Speed  | `0.5`                                       |
+
+
+### Recommended Usage
+
+Dense-trained model:
+
+```bash
+python demo_ui.py --ckpt runs/sac_dense_seed0/checkpoints/final.pt --reward_fn dense --speed 0.5
+```
+Sparse-trained model:
+
+```bash
+python demo_ui.py --ckpt runs/sac_sparse_seed0/checkpoints/final.pt --reward_fn sparse --speed 0.5
+```
 
 ### Custom Example
 
 ```bash
-python demo_ui.py --ckpt runs\sac_dense_seed0\checkpoints\final.pt --speed 3.0
+python demo_ui.py --ckpt runs/sac_dense_seed0/checkpoints/final.pt --reward_fn dense --speed 3.0
 ```
 
 ---
