@@ -341,7 +341,10 @@ def _parse_args():
     p.add_argument("--out_dir",      type=str,  default="eval_out/gifs")
     p.add_argument("--frame_ms",     type=int,  default=FRAME_DURATION_MS)
     p.add_argument("--final_hold_ms",type=int,  default=FINAL_HOLD_MS)
-    p.add_argument("--seed_start",   type=int,  default=0)
+    p.add_argument("--seed_start",   type=int,  default=0,
+                   help="First attempt index; episode seed = eval_seed_base + seed_start + attempt")
+    p.add_argument("--eval_seed_base", type=int, default=None,
+                   help="Offset for puzzle seeds (default: train seed from --ckpt × 1e6)")
     p.add_argument("--max_attempts", type=int,  default=200,
                    help="Max episodes to attempt before giving up")
     return p.parse_args()
@@ -352,7 +355,7 @@ def main():
 
     import torch
     from sac_agent import SACAgent
-    from evaluate import rollout_with_history
+    from evaluate import infer_eval_seed_base, rollout_with_history
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env    = BrainBlockEnv(reward_fn=args.reward_fn)
@@ -361,33 +364,45 @@ def main():
 
     agent = SACAgent(obs_dim=obs_dim, n_actions=n_actions, device=device)
     agent.load(args.ckpt)
+
+    eval_seed_base = (
+        args.eval_seed_base
+        if args.eval_seed_base is not None
+        else infer_eval_seed_base(args.ckpt)
+    )
     print(f"Loaded: {args.ckpt}")
+    print(f"Eval seed base: {eval_seed_base}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     collected = 0
     attempt   = 0
+    seen_queues = set()
 
     while collected < args.n_solutions and attempt < args.max_attempts:
-        seed = args.seed_start + attempt
+        episode_seed = eval_seed_base + args.seed_start + attempt
         attempt += 1
 
-        # Capture the queue before reset modifies it
-        env.reset(seed=seed)
-        original_queue = list(env.queue)
-
-        solved, hist, pseq, _ = rollout_with_history(env, agent, seed=seed)
+        solved, hist, pseq, _, orig_queue = rollout_with_history(
+            env, agent, seed=episode_seed,
+        )
         if not solved:
             continue
+
+        qkey = tuple(orig_queue)
+        if qkey in seen_queues:
+            continue
+        seen_queues.add(qkey)
 
         collected += 1
         save_path = os.path.join(args.out_dir, f"solution_{collected:02d}.gif")
         render_solution_gif(
-            hist, pseq, original_queue,
-            title=f"Solution #{collected}",
+            hist, pseq, orig_queue,
+            title=f"Solution #{collected}  seed={episode_seed}",
             save_path=save_path,
             frame_duration_ms=args.frame_ms,
             final_hold_ms=args.final_hold_ms,
         )
+        print(f"  Queue: {' '.join(orig_queue)}")
 
     print(f"\nDone. {collected} GIF(s) saved to {args.out_dir}/")
 

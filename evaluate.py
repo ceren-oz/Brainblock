@@ -19,6 +19,7 @@ Outputs:
 import argparse
 import os
 import csv
+import re
 import numpy as np
 import torch
 import matplotlib
@@ -51,7 +52,45 @@ def parse_args():
                    help="Frame duration in ms for GIFs (default 420)")
     p.add_argument("--gif_hold_ms",  type=int,   default=1800,
                    help="Final-frame hold duration in ms (default 1800)")
+    p.add_argument("--eval_seed_base", type=int, default=None,
+                   help="Offset added to every episode seed so different checkpoints "
+                        "see different puzzles (default: train seed from --ckpt × 1e6)")
     return p.parse_args()
+
+
+def infer_eval_seed_base(ckpt: str) -> int:
+    """Derive eval seed offset from paths like runs/sac_dense_seed3/..."""
+    m = re.search(r"seed(\d+)", ckpt.replace("\\", "/"))
+    return int(m.group(1)) * 1_000_000 if m else 0
+
+
+def select_solutions_for_viz(candidates: list, max_solutions: int) -> list:
+    """
+    Pick up to max_solutions entries, preferring distinct starting queues
+    so GIFs do not all show the same piece order.
+    """
+    selected, seen_queues, seen_boards = [], set(), set()
+
+    for c in candidates:
+        qkey = tuple(c["orig_queue"])
+        if qkey in seen_queues:
+            continue
+        seen_queues.add(qkey)
+        seen_boards.add(board_to_key(c["board"]))
+        selected.append(c)
+        if len(selected) >= max_solutions:
+            return selected
+
+    for c in candidates:
+        if len(selected) >= max_solutions:
+            break
+        bkey = board_to_key(c["board"])
+        if bkey in seen_boards:
+            continue
+        seen_boards.add(bkey)
+        selected.append(c)
+
+    return selected
 
 
 # -------------------------------------------------------------------------
@@ -120,67 +159,68 @@ def board_to_key(board: np.ndarray) -> str:
 # Rollout with board tracking
 # -------------------------------------------------------------------------
 
-def rollout(env: BrainBlockEnv, agent: SACAgent, deterministic: bool = True):
-    obs, _ = env.reset()
-    mask   = env.get_valid_action_mask()
+def rollout(
+    env: BrainBlockEnv,
+    agent: SACAgent,
+    seed: int,
+    deterministic: bool = True,
+    record_history: bool = False,
+):
+    obs, _ = env.reset(seed=seed)
+    original_queue = list(env.queue)
+    mask = env.get_valid_action_mask()
     total_reward = 0.0
-    boards   = []
-    pieces   = []
-    actions_taken = []
+    board_history: list = []
+    piece_sequence: list = []
 
     while True:
+        piece = env.queue[0] if env.queue else None
         action = agent.select_action(obs, mask, deterministic=deterministic)
-        actions_taken.append(action)
         next_obs, reward, terminated, truncated, info = env.step(action)
         next_mask = env.get_valid_action_mask()
         total_reward += reward
         done = terminated or truncated
 
-        if info.get("solved") or (done and not info.get("invalid")):
-            boards.append(env.board.copy())
-            # piece placed = last piece that was popped (before step)
-            # we track by re-reading sequence
+        if record_history and not info.get("invalid"):
+            board_history.append(env.board.copy())
+            piece_sequence.append(piece)
 
         obs, mask = next_obs, next_mask
         if done:
             break
 
     return {
-        "reward":     total_reward,
-        "ep_len":     env.step_count + env.invalid_action_count,
-        "covered":    info.get("covered", 0),
-        "solved":     info.get("solved", False),
-        "invalid":    env.invalid_action_count,
-        "board":      env.board.copy(),
+        "reward": total_reward,
+        "ep_len": env.step_count + env.invalid_action_count,
+        "covered": info.get("covered", 0),
+        "solved": info.get("solved", False),
+        "invalid": env.invalid_action_count,
+        "board": env.board.copy(),
+        "original_queue": original_queue,
+        "board_history": board_history,
+        "piece_sequence": piece_sequence,
     }
 
 
-# -------------------------------------------------------------------------
-# Full episode with piece tracking (for visualisation)
-# -------------------------------------------------------------------------
-
-def rollout_with_history(env: BrainBlockEnv, agent: SACAgent, seed: int = 0):
-    obs, _ = env.reset(seed=seed)
-    original_queue = list(env.queue)   # capture before any pops
-    mask   = env.get_valid_action_mask()
-    board_history = []
-    piece_sequence = []
-
-    while True:
-        piece = env.queue[0] if env.queue else None
-        action = agent.select_action(obs, mask, deterministic=False)
-        next_obs, reward, terminated, truncated, info = env.step(action)
-        next_mask = env.get_valid_action_mask()
-
-        if not info.get("invalid"):
-            board_history.append(env.board.copy())
-            piece_sequence.append(piece)
-
-        obs, mask = next_obs, next_mask
-        if terminated or truncated:
-            break
-
-    return info.get("solved", False), board_history, piece_sequence, env.board.copy(), original_queue
+def rollout_with_history(
+    env: BrainBlockEnv,
+    agent: SACAgent,
+    seed: int = 0,
+    deterministic: bool = False,
+):
+    """Backward-compatible wrapper used by visualize_gif.py."""
+    res = rollout(
+        env, agent, seed=seed,
+        deterministic=deterministic,
+        record_history=True,
+    )
+    return (
+        res["solved"],
+        res["board_history"],
+        res["piece_sequence"],
+        res["board"],
+        res["original_queue"],
+    )
 
 
 # -------------------------------------------------------------------------
@@ -198,25 +238,36 @@ def evaluate(args):
     agent = SACAgent(obs_dim=obs_dim, n_actions=n_actions, device=device)
     agent.load(args.ckpt)
 
+    eval_seed_base = (
+        args.eval_seed_base
+        if args.eval_seed_base is not None
+        else infer_eval_seed_base(args.ckpt)
+    )
+
     print(f"Loaded checkpoint: {args.ckpt}")
+    print(f"Eval seed base     : {eval_seed_base}  (added to every episode_seed)")
     print(f"Evaluating {args.n_episodes} episodes × {args.n_seeds} seeds ...\n")
 
     all_rewards, all_lengths, all_solved = [], [], []
     all_covered, all_invalid_rates = [], []
 
-    solutions = []   # unique solved boards
+    solution_candidates = []   # unique solved boards with placement history
+    seen_boards = set()
 
     csv_path = os.path.join(args.out_dir, "eval_results.csv")
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["seed", "episode", "reward", "ep_len",
-                         "covered", "solved", "invalid", "invalid_rate"])
+        writer.writerow(["seed_offset", "episode_seed", "episode", "reward",
+                         "ep_len", "covered", "solved", "invalid", "invalid_rate"])
 
         for seed_offset in range(args.n_seeds):
             base_seed = seed_offset * 10_000
             for ep in range(args.n_episodes):
-                np.random.seed(base_seed + ep)
-                res = rollout(env, agent, deterministic=False)
+                episode_seed = eval_seed_base + base_seed + ep
+                res = rollout(
+                    env, agent, seed=episode_seed,
+                    deterministic=False, record_history=True,
+                )
 
                 ep_len   = res["ep_len"]
                 inv_rate = res["invalid"] / max(ep_len, 1)
@@ -228,20 +279,22 @@ def evaluate(args):
                 all_invalid_rates.append(inv_rate)
 
                 writer.writerow([
-                    seed_offset, ep, res["reward"], ep_len,
+                    seed_offset, episode_seed, ep, res["reward"], ep_len,
                     res["covered"], int(res["solved"]),
                     res["invalid"], f"{inv_rate:.3f}",
                 ])
 
                 if res["solved"]:
                     key = board_to_key(res["board"])
-                    if key not in [board_to_key(s[0]) for s in solutions]:
-                        # Re-run to capture history
-                        solved, hist, pseq, board, orig_queue = rollout_with_history(
-                            env, agent, seed=base_seed + ep
-                        )
-                        if solved:
-                            solutions.append((board, hist, pseq, orig_queue))
+                    if key not in seen_boards:
+                        seen_boards.add(key)
+                        solution_candidates.append({
+                            "board": res["board"],
+                            "board_history": res["board_history"],
+                            "piece_sequence": res["piece_sequence"],
+                            "orig_queue": res["original_queue"],
+                            "episode_seed": episode_seed,
+                        })
 
     # ---- Print summary ----
     print("=" * 55)
@@ -251,18 +304,31 @@ def evaluate(args):
     print(f"Mean episode length: {np.mean(all_lengths):.1f}")
     print(f"Mean covered cells : {np.mean(all_covered):.1f} / 40")
     print(f"Invalid-action rate: {np.mean(all_invalid_rates):.2%}")
-    print(f"Unique solutions   : {len(solutions)}")
+    print(f"Unique solutions   : {len(solution_candidates)}")
     print("=" * 55)
 
+    solutions = select_solutions_for_viz(
+        solution_candidates, args.max_solutions
+    )
+    print(f"Visualizing {len(solutions)} solution(s) with distinct queues where possible")
+
     # ---- Visualise solutions ----
-    for i, (board, hist, pseq, orig_queue) in enumerate(solutions[:args.max_solutions]):
+    for i, sol in enumerate(solutions):
+        board = sol["board"]
+        hist = sol["board_history"]
+        pseq = sol["piece_sequence"]
+        orig_queue = sol["orig_queue"]
+        episode_seed = sol["episode_seed"]
+        queue_label = " ".join(orig_queue)
+
         save_path = os.path.join(args.out_dir, f"solution_{i+1:02d}.png")
         render_solution_matplotlib(
             hist, pseq,
-            title=f"BrainBlock Solution #{i+1}",
-            save_path=save_path
+            title=f"Solution #{i+1}  seed={episode_seed}",
+            save_path=save_path,
         )
-        print(f"Solution {i+1} saved → {save_path}")
+        print(f"Solution {i+1} saved → {save_path}  (episode_seed={episode_seed})")
+        print(f"  Queue: {queue_label}")
 
         # Animated GIF
         if getattr(args, "gif", False):
@@ -272,7 +338,7 @@ def evaluate(args):
                 gif_path = os.path.join(gif_dir, f"solution_{i+1:02d}.gif")
                 render_solution_gif(
                     hist, pseq, orig_queue,
-                    title=f"Solution #{i+1}",
+                    title=f"Solution #{i+1}  seed={episode_seed}",
                     save_path=gif_path,
                     frame_duration_ms=getattr(args, "gif_frame_ms", 420),
                     final_hold_ms=getattr(args, "gif_hold_ms", 1800),
@@ -293,7 +359,7 @@ def evaluate(args):
         "std_return":   np.std(all_rewards),
         "mean_length":  np.mean(all_lengths),
         "inv_rate":     np.mean(all_invalid_rates),
-        "n_solutions":  len(solutions),
+        "n_solutions":  len(solution_candidates),
     }
 
 
